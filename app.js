@@ -9,17 +9,25 @@ const FASTLY_KEY = process.env.FASTLY_KEY
 const LIST_OF_SERVICES = process.env.SERVICES.split(" ")
 
 const request = require('request')
+const call_frequency = 60
 
-let timestamp = 0
+let timestamp = Math.round(Date.now()/1000) - call_frequency
+let send_count = 0
+
+get_send_count = ( () =>
+  send_count = send_count + 1
+)
 
 setInterval( () => {
   //This will create 1920 events per day, or 13440 events per week.
-   LIST_OF_SERVICES.map( (service) => {
-       pollFromFastly(service)
+   LIST_OF_SERVICES.map( (service_entry) => {
+       pollFromFastly(service_entry)
    })
-}, 180000) // 3 minutes
+}, 1000 * call_frequency) 
 
-pollFromFastly = (service) => {
+pollFromFastly = (service_entry) => {
+  let [service_name, service] = service_entry.split(":")
+  service = service || service_name; // Make it backward compatible
   let fastly_url = "https://rt.fastly.com/v1/channel/" + service +  "/ts/" + timestamp
   request({
     method: "GET",
@@ -32,19 +40,22 @@ pollFromFastly = (service) => {
     if (response) {
       let valuableData = JSON.parse(response.body)
       timestamp = valuableData.Timestamp
+      console.log("New timestamp for " + service_name + " is " + timestamp)
+      console.log("SIZE=" + valuableData.Data.length + " for " + fastly_url )
       valuableData.Data.map( (data) => {
-          batchAndSend(data.aggregated, service)
+          if(data.aggregated) batchAndSend(data.aggregated, service, service_name)
       })
     }
     if (err) console.log(err)
   })
 }
 
-let batchAndSend = (aggregate, service) => {
+let batchAndSend = (aggregate, service, service_name) => {
 
   let message  = {
-    "eventType":                       "LogAggregate",
+    "eventType":                       "LogAggregateFastly",
     "service":                         service,
+    "service_name":                    service_name,
     /*
     These are all the attributes that Fastly returns. I included every one; if there are any that are less interesting to you feel free to delete those. 
 
@@ -160,6 +171,7 @@ let batchAndSend = (aggregate, service) => {
 }
 
 sendToInsights = (logMessages) => {
+  const my_send_count = get_send_count()
   let insights_url = 'https://insights-collector.newrelic.com/v1/accounts/'+ ACCOUNT_ID +'/events'
   request({
     method: "POST",
@@ -170,7 +182,7 @@ sendToInsights = (logMessages) => {
     }, 
     body: JSON.stringify(logMessages)
   }, (err, response, body) => {
-    console.log(body)
-    console.log(err)
+    console.log("Sent message (" + my_send_count + ") for " + logMessages.service_name + " at " + Date().toLocaleString() + ". Response: " + body)
+    if(err) console.log("Error: " + err);
   })
 }
